@@ -1,13 +1,15 @@
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -25,7 +27,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "home_inventory.db")
 # --- Conversation states ---
 ADD_PICK_ROOM, ADD_LOCATION_NAME, ADD_PHOTO, ADD_DESC = range(4)
 
-# --- DB helpers ---
+# =========================
+# DB helpers
+# =========================
 def db_connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -63,8 +67,7 @@ def db_init():
     )
     """)
 
-    # Full-text search (FTS5). Works in most modern Python builds.
-    # If your SQLite build has no FTS5, you can remove this and fallback to LIKE-search.
+    # FTS5 table
     cur.execute("""
     CREATE VIRTUAL TABLE IF NOT EXISTS locations_fts
     USING fts5(
@@ -141,12 +144,13 @@ def rebuild_fts_for_location(location_id: int):
         conn.close()
         return
 
-    notes = cur.execute("SELECT text FROM notes WHERE location_id = ? ORDER BY created_at", (location_id,)).fetchall()
+    notes = cur.execute(
+        "SELECT text FROM notes WHERE location_id = ? ORDER BY created_at",
+        (location_id,)
+    ).fetchall()
     content = "\n".join([n["text"] for n in notes])
 
-    # remove old
     cur.execute("DELETE FROM locations_fts WHERE location_id = ?", (location_id,))
-    # insert new
     cur.execute(
         "INSERT INTO locations_fts(location_id, room_name, location_name, content) VALUES(?,?,?,?)",
         (location_id, row["room_name"], row["location_name"], content)
@@ -159,7 +163,6 @@ def search_locations(query: str, limit: int = 5) -> List[sqlite3.Row]:
     conn = db_connect()
     cur = conn.cursor()
 
-    # Try FTS first
     try:
         rows = cur.execute("""
             SELECT
@@ -175,7 +178,6 @@ def search_locations(query: str, limit: int = 5) -> List[sqlite3.Row]:
         conn.close()
         return rows
     except sqlite3.OperationalError:
-        # fallback to LIKE (slower, but works)
         like = f"%{q}%"
         rows = cur.execute("""
             SELECT
@@ -193,7 +195,62 @@ def search_locations(query: str, limit: int = 5) -> List[sqlite3.Row]:
         conn.close()
         return rows
 
-# --- Bot handlers ---
+def get_location_notes(location_id: int) -> List[str]:
+    conn = db_connect()
+    rows = conn.execute(
+        "SELECT text FROM notes WHERE location_id = ? ORDER BY created_at",
+        (location_id,)
+    ).fetchall()
+    conn.close()
+    return [r["text"] for r in rows]
+
+def delete_location(location_id: int):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM notes WHERE location_id = ?", (location_id,))
+    cur.execute("DELETE FROM locations_fts WHERE location_id = ?", (location_id,))
+    cur.execute("DELETE FROM locations WHERE id = ?", (location_id,))
+    conn.commit()
+    conn.close()
+
+# =========================
+# Keyboards
+# =========================
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("➕ Добавить место"), KeyboardButton("🔍 Найти")],
+            [KeyboardButton("📂 Комнаты"), KeyboardButton("➕ Добавить комнату")],
+            [KeyboardButton("ℹ️ Помощь")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Выбери действие…",
+    )
+
+def rooms_keyboard(rows: List[sqlite3.Row]) -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(r["name"], callback_data=f"room:{r['id']}")] for r in rows]
+    return InlineKeyboardMarkup(buttons)
+
+def location_actions_keyboard(location_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📦 Показать", callback_data=f"loc:view:{location_id}"),
+            InlineKeyboardButton("🗑 Удалить", callback_data=f"loc:delete:{location_id}"),
+        ]
+    ])
+
+def confirm_delete_keyboard(location_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да, удалить", callback_data=f"loc:confirm:{location_id}"),
+            InlineKeyboardButton("❌ Нет", callback_data="loc:cancel"),
+        ]
+    ])
+
+# =========================
+# Bot handlers
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🏠 *Домашний помощник: где что лежит*\n\n"
@@ -202,13 +259,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /rooms — список комнат\n"
         "• /add — добавить место хранения (фото + описание)\n"
         "• /find <запрос> — найти вещи (например: /find зимние вещи)\n\n"
-        "Совет: начни с добавления комнат, например:\n"
-        "`/addroom Зал`\n"
-        "`/addroom Спальня`\n"
-        "`/addroom Кладовка`"
+        "Можно пользоваться и кнопками меню 👇"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
 
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Меню 👇", reply_markup=main_menu_keyboard())
+
+async def kb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Клавиатура включена 👇",
+        reply_markup=main_menu_keyboard()
+    )
 async def addroom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Напиши так: /addroom Зал")
@@ -230,20 +292,18 @@ async def rooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {r['name']}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
-def rooms_keyboard(rows: List[sqlite3.Row]) -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(r["name"], callback_data=f"room:{r['id']}")] for r in rows]
-    return InlineKeyboardMarkup(buttons)
-
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = list_rooms()
     if not rows:
         await update.message.reply_text("Сначала добавь хотя бы одну комнату: /addroom Зал")
         return ConversationHandler.END
 
-    await update.message.reply_text(
-        "Выбери комнату:",
-        reply_markup=rooms_keyboard(rows)
-    )
+    # если человек нажал кнопку меню, удобнее убрать клавиатуру на время диалога
+    if update.message:
+        await update.message.reply_text("Выбери комнату:", reply_markup=rooms_keyboard(rows))
+    else:
+        await update.callback_query.message.reply_text("Выбери комнату:", reply_markup=rooms_keyboard(rows))
+
     return ADD_PICK_ROOM
 
 async def add_pick_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -293,7 +353,7 @@ async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нужно фото. Отправь изображение места хранения.")
         return ADD_PHOTO
 
-    photo = update.message.photo[-1]  # biggest
+    photo = update.message.photo[-1]
     location_id = int(context.user_data["location_id"])
     set_location_photo(location_id, photo.file_id)
 
@@ -306,8 +366,6 @@ async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_DESC
 
 def extract_text_from_message(update: Update) -> Optional[str]:
-    # In this MVP we store voice as "голосовое (без распознавания)".
-    # You can extend to real speech-to-text later.
     if update.message.text:
         return update.message.text.strip()
     if update.message.voice:
@@ -321,12 +379,11 @@ async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = extract_text_from_message(update)
     if text is None:
-        # Voice received: in MVP we ask user to provide text too.
         if update.message.voice:
             await update.message.reply_text(
                 "Я получил голосовое ✅\n"
                 "В этой версии я ещё не распознаю речь автоматически.\n"
-                "Пожалуйста, отправь *короткое текстовое описание* тем же сообщением (или следующим).",
+                "Пожалуйста, отправь *короткое текстовое описание* (следующим сообщением).",
                 parse_mode=ParseMode.MARKDOWN
             )
             return ADD_DESC
@@ -345,10 +402,10 @@ async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Сохранено!\n\n"
         f"📍 *{room_name}* → *{location_name}*\n"
         f"📝 {text}",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_keyboard(),
     )
 
-    # cleanup state
     context.user_data.pop("room_id", None)
     context.user_data.pop("room_name", None)
     context.user_data.pop("location_id", None)
@@ -357,7 +414,7 @@ async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ок, отменил. Чтобы начать снова: /add")
+    await update.message.reply_text("Ок, отменил. Чтобы начать снова: /add", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,10 +431,84 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for r in rows:
         caption = f"📍 *{r['room_name']}* → *{r['location_name']}*"
+        kb = location_actions_keyboard(int(r["id"]))
         if r["photo_file_id"]:
-            await update.message.reply_photo(photo=r["photo_file_id"], caption=caption, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_photo(
+                photo=r["photo_file_id"],
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb
+            )
         else:
-            await update.message.reply_text(caption, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb
+            )
+
+async def location_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) < 2 or parts[0] != "loc":
+        return
+
+    action = parts[1]
+
+    if action == "view" and len(parts) == 3 and parts[2].isdigit():
+        location_id = int(parts[2])
+        notes = get_location_notes(location_id)
+        if not notes:
+            text = "📦 *Содержимое:*\n• (пусто)"
+        else:
+            text = "📦 *Содержимое:*\n• " + "\n• ".join(notes)
+
+        if query.message and query.message.photo:
+            await query.edit_message_caption(text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    elif action == "delete" and len(parts) == 3 and parts[2].isdigit():
+        location_id = int(parts[2])
+        await query.edit_message_reply_markup(reply_markup=confirm_delete_keyboard(location_id))
+
+    elif action == "confirm" and len(parts) == 3 and parts[2].isdigit():
+        location_id = int(parts[2])
+        delete_location(location_id)
+        await query.edit_message_text("🗑 *Место хранения удалено*", parse_mode=ParseMode.MARKDOWN)
+
+    elif action == "cancel":
+        # просто убираем кнопки подтверждения
+        await query.edit_message_reply_markup(reply_markup=None)
+
+# --- Menu text router (big keyboard buttons) ---
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = (update.message.text or "").strip()
+
+    if t == "➕ Добавить место":
+        return await add_start(update, context)
+
+    if t == "🔍 Найти":
+        await update.message.reply_text(
+            "Напиши запрос так:\n`/find зимние вещи`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if t == "📂 Комнаты":
+        return await rooms(update, context)
+
+    if t == "➕ Добавить комнату":
+        await update.message.reply_text(
+            "Напиши так:\n`/addroom Спальня`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if t == "ℹ️ Помощь":
+        return await start(update, context)
 
 def main():
     token = os.environ.get("BOT_TOKEN")
@@ -388,11 +519,18 @@ def main():
 
     app = Application.builder().token(token).build()
 
+    # commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("addroom", addroom))
     app.add_handler(CommandHandler("rooms", rooms))
     app.add_handler(CommandHandler("find", find))
+    app.add_handler(CommandHandler("kb", kb))
 
+    # inline buttons for find results
+    app.add_handler(CallbackQueryHandler(location_actions, pattern=r"^loc:"))
+
+    # /add conversation
     add_conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
         states={
@@ -406,9 +544,11 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
         allow_reentry=True,
-        per_message=True,
     )
     app.add_handler(add_conv)
+
+    # big menu buttons router (put AFTER conv to not break /add)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_router))
 
     app.run_polling()
 
