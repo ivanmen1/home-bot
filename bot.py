@@ -523,6 +523,8 @@ async def location_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Menu router with states
 # =========================
 async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"DEBUG: {update.message.text!r}")
+
     t = (update.message.text or "").strip().lower()
 
     if "добавить место" in t:
