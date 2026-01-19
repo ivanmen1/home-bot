@@ -523,12 +523,12 @@ async def location_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Menu router with states
 # =========================
 async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = (update.message.text or "").strip()
+    t = (update.message.text or "").strip().lower()
 
-    if t == "➕ Добавить место":
+    if "добавить место" in t:
         return await add_start(update, context)
 
-    if t == "🔍 Найти":
+    if "найти" in t:
         await update.message.reply_text(
             "Что ищем? Напиши одним сообщением (например: `зимние вещи`)",
             parse_mode=ParseMode.MARKDOWN,
@@ -536,10 +536,10 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU_FIND_QUERY
 
-    if t == "📂 Комнаты":
+    if "комнаты" in t:
         return await rooms_cmd(update, context)
 
-    if t == "➕ Добавить комнату":
+    if "добавить комнату" in t:
         await update.message.reply_text(
             "Напиши название комнаты (например: `Спальня`)",
             parse_mode=ParseMode.MARKDOWN,
@@ -547,7 +547,7 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MENU_ADDROOM_NAME
 
-    if t == "ℹ️ Помощь":
+    if "помощь" in t or "help" in t:
         return await start(update, context)
 
     # если человек пишет что-то непонятное — просто покажем меню
@@ -625,7 +625,8 @@ def main():
 
     # menu conversation (buttons -> prompts -> text)
     menu_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^(➕ Добавить место|🔍 Найти|📂 Комнаты|➕ Добавить комнату|ℹ️ Помощь)$"), menu_router)],
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, menu_router)],
+
         states={
             MENU_FIND_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_find_query)],
             MENU_ADDROOM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_addroom_name)],
