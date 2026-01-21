@@ -475,6 +475,7 @@ async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
+git rm --cached home_inventory.db
 
 async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, отменил. Чтобы начать снова: /add", reply_markup=main_menu_keyboard())
