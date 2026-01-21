@@ -531,14 +531,17 @@ def main():
     app.add_handler(CommandHandler("find", find_cmd))
 
     # main menu conversation (buttons)
+    MENU_REGEX = r"^(➕ Добавить место|🔍 Найти|➕ Добавить комнату|🗂 Комнаты|ℹ️ Помощь)$"
+
     menu_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, menu_router)],
+        entry_points=[MessageHandler(filters.Regex(MENU_REGEX), menu_router)],
         states={
             ADDROOM_WAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addroom_from_button)],
             FIND_WAIT_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_from_button)],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
     )
+    app.add_handler(add_conv)
     app.add_handler(menu_conv)
 
     # add flow conversation
@@ -554,9 +557,9 @@ def main():
             ],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
-        allow_reentry=True,
+
     )
-    app.add_handler(add_conv)
+
 
     app.run_polling()
 
