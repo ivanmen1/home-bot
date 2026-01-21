@@ -523,46 +523,51 @@ def main():
     app = Application.builder().token(token).build()
 
     # commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("kb", kb))
-    app.add_handler(CommandHandler("hidekb", hidekb))
-    app.add_handler(CommandHandler("addroom", addroom_cmd))
-    app.add_handler(CommandHandler("rooms", rooms_cmd))
-    app.add_handler(CommandHandler("find", find_cmd))
-
-    # main menu conversation (buttons)
-    MENU_REGEX = r"^(➕ Добавить место|🔍 Найти|➕ Добавить комнату|🗂 Комнаты|ℹ️ Помощь)$"
-
-    menu_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(MENU_REGEX), menu_router)],
-        states={
-            ADDROOM_WAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addroom_from_button)],
-            FIND_WAIT_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_from_button)],
-        },
-        fallbacks=[CommandHandler("cancel", add_cancel)],
-    )
-    app.add_handler(add_conv)
-    app.add_handler(menu_conv)
-
-    # add flow conversation
-    add_conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
-        states={
-            ADD_PICK_ROOM: [CallbackQueryHandler(add_pick_room, pattern=r"^room:\d+$")],
-            ADD_LOCATION_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_location_name)],
-            ADD_PHOTO: [MessageHandler(filters.PHOTO, add_photo)],
-            ADD_DESC: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_desc),
-                MessageHandler(filters.VOICE, add_desc),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", add_cancel)],
-
-    )
 
 
-    app.run_polling()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("kb", kb))
+app.add_handler(CommandHandler("hidekb", hidekb))
 
+# оставляем и команды, и “кнопочные” версии (не обязательно, но удобно)
+app.add_handler(CommandHandler("addroom", addroom_cmd))
+app.add_handler(CommandHandler("rooms", rooms_cmd))
+app.add_handler(CommandHandler("find", find_cmd))
+
+# --- /add flow conversation (СОЗДАЁМ СНАЧАЛА!) ---
+add_conv = ConversationHandler(
+    entry_points=[CommandHandler("add", add_start)],
+    states={
+        ADD_PICK_ROOM: [CallbackQueryHandler(add_pick_room, pattern=r"^room:\d+$")],
+        ADD_LOCATION_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_location_name)],
+        ADD_PHOTO: [MessageHandler(filters.PHOTO, add_photo)],
+        ADD_DESC: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_desc),
+            MessageHandler(filters.VOICE, add_desc),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", add_cancel)],
+    allow_reentry=True,
+)
+
+# --- main menu conversation (buttons) ---
+MENU_REGEX = r"^(➕ Добавить место|🔍 Найти|➕ Добавить комнату|🗂 Комнаты|ℹ️ Помощь)$"
+
+menu_conv = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex(MENU_REGEX), menu_router)],
+    states={
+        ADDROOM_WAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addroom_from_button)],
+        FIND_WAIT_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_from_button)],
+    },
+    fallbacks=[CommandHandler("cancel", add_cancel)],
+    allow_reentry=True,
+)
+
+# ВАЖНО: порядок! сначала add_conv, потом menu_conv
+app.add_handler(add_conv)
+app.add_handler(menu_conv)
+
+app.run_polling()
 
 if __name__ == "__main__":
     main()
