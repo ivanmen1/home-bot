@@ -287,6 +287,10 @@ async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Buttons flow ----------
 async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # если пользователь сейчас в процессе /add — НЕ лезем
+    if context.user_data.get("room_id") or context.user_data.get("location_id"):
+        return ConversationHandler.END
+
     """
     Handles reply keyboard presses.
     """
@@ -410,9 +414,11 @@ async def add_pick_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         f"✅ Комната: *{room['name']}*\n\n"
-        "Теперь напиши *место хранения* (например: `коробка на шкафу`, `шкаф, верхняя полка`).",
-        parse_mode=ParseMode.MARKDOWN
+        "Теперь напиши *место хранения* ...",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=None
     )
+
     return ADD_LOCATION_NAME
 
 
